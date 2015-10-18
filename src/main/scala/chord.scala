@@ -1,44 +1,57 @@
 import akka.actor._
 import akka.actor.Props
-import akka.routing.RoundRobinRouter
 import scala.concurrent.duration.Duration
 import com.typesafe.config.ConfigFactory
-import java.security.MessageDigest
-import java.io.File
 import scala.math._
+import scala.util.control.Breaks._
 
 sealed trait chord
 
 case class Initialize(actorRefs: Array[ActorRef]) extends chord
-case class FailureLicenseToKill(nodesRef: Array[ActorRef]) extends chord
-case class FailureKill(timeToSleep: Int) extends chord
+case class SendRequest(requesterRef: ActorRef, message: String, hopNum: Int) extends chord
+//case class FailureKill(timeToSleep: Int) extends chord
 
-class fingertable(startc: Int, intStart: Int, intEnd: Int, nodec:Int, successorc:Int, predecessorc:Int) {
+class fingertable(startc: Int, intStart: Int, intEnd: Int, nodec: ActorRef) {
   var start: Int = startc
   var interval = (intStart, intEnd)
-  var node: Int = nodec
-  var successor: Int = successorc
-  var predecessor: Int = predecessorc
+  var node: ActorRef = nodec
+
+  override def toString(): String = {
+  	return "\nStart = " + start + "\nInterval = " + interval + "\nNode = " + node + "\n"
+  }
 }
 
 
 // Create an actor for a peer
 class Node(idc: Int, m: Int) extends Actor {
-  var id = idc
-  var i = 0 
-  var finger:Array[fingertable] = new Array[fingertable](m)
+  var nodeId = idc
+  var successor: ActorRef = null
+  var predecessor: ActorRef = null
+  var finger:Array[fingertable] = new Array[fingertable](m + 1)
+  var i = 0
+
   def receive = {
     case Initialize(actors) =>
-      var intEnd = (id + 1) % pow(2,m)
       for(i <- 1 to m) {
-        val start = intEnd
-        val intStart = -1
-        intEnd = (id + pow(2, i)) % pow(2,m)
-        
+        val start = ((nodeId + pow(2, (i-1))) % pow(2,m)).toInt
+      	val intEnd = ((nodeId + pow(2, i)) % pow(2,m)).toInt
+        var node: ActorRef = null
 
-        finger(i) =  new fingertable(-1,-1,-1,-1,-1,-1);
+        // Find finger[i].node = First node -geq finger[i].start
+        var sIdx = start
+        //println("Start = " + start + "\t" + actors(start))
+        while(actors(sIdx) == null) {
+        	//println("\nChecking sIdx = " + sIdx + " for " + actors(start))
+        	sIdx = (sIdx + 1) % pow(2, m).toInt
+        }
+        node = actors(sIdx)
+
+        finger(i) =  new fingertable(start, start, intEnd, node);
       }
-      println("Error")
+
+      successor = finger(1).node
+      for(i <- 1 to m)
+ 	     println("Actor = " + self + " ID: " + nodeId + "\tfinger["+i+"] "+ finger(i).toString())
     case _ =>
       println("Error")
   }
@@ -66,10 +79,41 @@ object Chord extends App {
     }
 
     // Number of nodes (peers)
-    var numNodes = args(0)
+    var numNodes = args(0).toInt
+  	val m = ceil(log(numNodes)/log(2)).toInt
+  	val size = pow(2, m).toInt
 
     // Number of requests each peer will make
     var numRequests = args(1)
+
+    val system = ActorSystem("Chord")
+    var PeerNodes:Array[ActorRef] = new Array[ActorRef](size)
+    var idx = 0
+
+    // Initialize the actor nodes to NULL
+    for( i <- 0 until size) {
+        PeerNodes(i) = null
+    }
+
+    for( i <- 0 until size by 2) {
+    	if (idx < numNodes) {
+    		PeerNodes(i) = system.actorOf(Props(new Node(i, m)))
+    		idx += 1
+    	}
+    }
+
+    // Actor positions in the network ring - for debugging
+    println("Peer Network of size " + size)
+    for( i <- 0 until size) {
+    	if (PeerNodes(i) != null)
+    		println(PeerNodes(i) + " present at " + i)
+    }
+    println("\n")
+
+    for( i <- 0 until size) {
+    	if (PeerNodes(i) != null)
+        	PeerNodes(i) ! Initialize(PeerNodes)
+    }
 
   }
 }
