@@ -7,6 +7,7 @@ import scala.util.control.Breaks._
 import scala.concurrent.Await
 import akka.pattern.ask
 import akka.util.Timeout
+import scala.concurrent.Future
 import scala.concurrent.duration._
 
 sealed trait chord
@@ -37,11 +38,12 @@ class Node(idc: Int, m: Int) extends Actor {
   var finger:Array[fingertable] = new Array[fingertable](m + 1)
   var i = 0
   implicit val timeout = Timeout(5 seconds)
+  var future:Future[Any]= null
 
   // ask node to find its successor
   def find_successor(id: Int): ActorRef = {
   	var n1 = find_predecessor(id)
-  	val future = n1 ? GetSuccessor
+  	future = n1 ? GetSuccessor
 	val succResult = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
 
   	return succResult
@@ -51,28 +53,28 @@ class Node(idc: Int, m: Int) extends Actor {
   def find_predecessor(id: Int): ActorRef = {
   	var n1 = self
 
-  	val future1 = n1 ? GetNodeId
-	var n1NodeId = Await.result(future1, timeout.duration).asInstanceOf[Int]
-	val future2 = n1 ? GetSuccessor
-	var n1Succ = Await.result(future2, timeout.duration).asInstanceOf[ActorRef]
-	val future3 = n1Succ ? GetNodeId
-	var n1SuccNodeId = Await.result(future3, timeout.duration).asInstanceOf[Int]
+  	var future = n1 ? GetNodeId
+	var n1NodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+	future = n1 ? GetSuccessor
+	var n1Succ = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+	future = n1Succ ? GetNodeId
+	var n1SuccNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
 
   	var queryInterval = n1NodeId to n1SuccNodeId
   	
   	var nextNode: ActorRef = null
   	while(queryInterval.contains(id) == false) {
   		//n1 = n1.closest_preceding_finger(id)
-  		val future4 = n1 ? ClosestPrecedingFinger
-		n1 = Await.result(future4, timeout.duration).asInstanceOf[ActorRef]
+  		future = n1 ? ClosestPrecedingFinger
+		n1 = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
 		
-		val future5 = n1 ? GetSuccessor
-		n1Succ = Await.result(future5, timeout.duration).asInstanceOf[ActorRef]
-		val future6 = n1Succ ? GetNodeId
-		n1SuccNodeId = Await.result(future6, timeout.duration).asInstanceOf[Int]
+		future = n1 ? GetSuccessor
+		n1Succ = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+		future = n1Succ ? GetNodeId
+		n1SuccNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
 
-		val future7 = n1 ? GetNodeId
-		n1NodeId = Await.result(future7, timeout.duration).asInstanceOf[Int]
+		future = n1 ? GetNodeId
+		n1NodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
 
   		queryInterval = n1NodeId to n1SuccNodeId
   	}
@@ -86,7 +88,7 @@ class Node(idc: Int, m: Int) extends Actor {
   	var node = -1
   	for (i <- m to 1 by -1) {
   		
-		val future = finger(i).node ? GetNodeId
+		future = finger(i).node ? GetNodeId
 		val result = Await.result(future, timeout.duration).asInstanceOf[Int]
 
   		if (queryInterval.contains(result)) {
@@ -131,7 +133,7 @@ class Node(idc: Int, m: Int) extends Actor {
   		var node = -1
   		for (i <- m to 1 by -1) {
 	  		
-			val future = finger(i).node ? GetNodeId
+			future = finger(i).node ? GetNodeId
 			val result = Await.result(future, timeout.duration).asInstanceOf[Int]
 	
   			if (queryInterval.contains(result)) {
