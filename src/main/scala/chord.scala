@@ -19,9 +19,14 @@ case class JoinNetwork(n: ActorRef) extends chord
 case class SendRequest(requesterRef: ActorRef, message: String, hopNum: Int) extends chord
 case class GetNodeId() extends chord
 case class GetSuccessor() extends chord
+case class GetPredecessor() extends chord
+case class SetPredecessor(pred: ActorRef) extends chord
+case class FindSuccessor(id: Int) extends chord
 case class ClosestPrecedingFinger(id: Int) extends chord
+case class UpdateFingerTable(s: ActorRef, i: Int) extends chord
 case class GiveMeSomePlace(ip: String) extends chord
 //case class FailureKill(timeToSleep: Int) extends chord
+
 
 class fingertable(startc: Int, intStart: Int, intEnd: Int, nodec: ActorRef) {
   var start: Int = startc
@@ -44,14 +49,6 @@ class Node(idc: Int, m: Int) extends Actor {
   implicit val timeout = Timeout(5 seconds)
   var future:Future[Any]= null
 
-  // ask node to find its successor
-  def find_successor(id: Int): ActorRef = {
-  	var n1 = find_predecessor(id)
-  	future = n1 ? GetSuccessor
-	val succResult = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
-
-  	return succResult
-  }
 
   // ask node to find its predecessor
   def find_predecessor(id: Int): ActorRef = {
@@ -67,7 +64,6 @@ class Node(idc: Int, m: Int) extends Actor {
   	
   	var nextNode: ActorRef = null
   	while(queryInterval.contains(id) == false) {
-  		//n1 = n1.closest_preceding_finger(id)
   		future = n1 ? ClosestPrecedingFinger
 		n1 = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
 		
@@ -90,12 +86,38 @@ class Node(idc: Int, m: Int) extends Actor {
     return MH3.stringHash(key)
   }
 
-  def init_finger_table(n: ActorRef) = {
+  def init_finger_table(n1: ActorRef) = {
+  	future = n1 ? FindSuccessor(finger(1).start)
+  	finger(1).node = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+
+  	future = finger(1).node ? GetPredecessor()
+  	predecessor = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+
+  	future = successor ? SetPredecessor(self)
+  	val success = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+
+
+  	for( i <- 1 until m) {
+	  	future = finger(i).node ? GetNodeId
+	  	var fingerNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+	  	var queryInterval = nodeId to (fingerNodeId - 1)
+  		if (queryInterval.contains(finger(i+1).start))
+  			finger(i+1).node = finger(i).node
+  		else {
+  			future = n1 ? FindSuccessor(finger(i+1).start)
+  			finger(i+1).node = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+  		}
+  	}
   }
   
   def update_others() = {
-
+  	var p: ActorRef = null
+  	for( i <- 0 to m) {
+  		p = find_predecessor((nodeId - pow(2, i-1)).toInt)
+  		p ? UpdateFingerTable(self, i)
+  	}
   }
+
 
   def receive = {
     case Initialize(actors) =>
@@ -124,6 +146,18 @@ class Node(idc: Int, m: Int) extends Actor {
  	case GetSuccessor() =>
  		sender ! successor
 
+ 	case GetPredecessor() =>
+ 		sender ! predecessor
+
+ 	case SetPredecessor(pred: ActorRef) =>
+ 		predecessor = pred
+
+ 	case FindSuccessor(id: Int) =>
+ 		var n1 = find_predecessor(id)
+  		future = n1 ? GetSuccessor
+		val succResult = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+		sender ! succResult
+
  	case ClosestPrecedingFinger(id) =>
  		val queryInterval = nodeId to id
   		var node = -1
@@ -134,9 +168,22 @@ class Node(idc: Int, m: Int) extends Actor {
   			if (queryInterval.contains(result)) {
   				sender ! finger(i).node
   			}
-  		}
-	
+  		}	
   		sender ! self
+
+  	case UpdateFingerTable(s: ActorRef, i: Int) =>
+  		future = finger(i).node ? GetNodeId
+  		var fingerNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+  		
+  		future = s ? GetNodeId
+	  	var sNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+  		
+  		var queryInterval = nodeId to (fingerNodeId - 1)
+  		if (queryInterval.contains(sNodeId)) {
+  			finger(i).node = s
+  			var p = predecessor
+  			p ? UpdateFingerTable(s, i)
+  		}
 
     case GiveMeSomePlace(key) =>
       sender ! hash(key)
