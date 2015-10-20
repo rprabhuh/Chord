@@ -9,14 +9,18 @@ import akka.pattern.ask
 import akka.util.Timeout
 import scala.concurrent.Future
 import scala.concurrent.duration._
+import scala.util.hashing.{MurmurHash3=>MH3}
+
 
 sealed trait chord
 
 case class Initialize(actorRefs: Array[ActorRef]) extends chord
+case class JoinNetwork(n: ActorRef) extends chord
 case class SendRequest(requesterRef: ActorRef, message: String, hopNum: Int) extends chord
 case class GetNodeId() extends chord
 case class GetSuccessor() extends chord
 case class ClosestPrecedingFinger(id: Int) extends chord
+case class GiveMeSomePlace(ip: String) extends chord
 //case class FailureKill(timeToSleep: Int) extends chord
 
 class fingertable(startc: Int, intStart: Int, intEnd: Int, nodec: ActorRef) {
@@ -32,7 +36,7 @@ class fingertable(startc: Int, intStart: Int, intEnd: Int, nodec: ActorRef) {
 
 // Create an actor for a peer
 class Node(idc: Int, m: Int) extends Actor {
-  val nodeId = idc
+  var nodeId = idc
   var successor: ActorRef = null
   var predecessor: ActorRef = null
   var finger:Array[fingertable] = new Array[fingertable](m + 1)
@@ -52,7 +56,6 @@ class Node(idc: Int, m: Int) extends Actor {
   // ask node to find its predecessor
   def find_predecessor(id: Int): ActorRef = {
   	var n1 = self
-
   	var future = n1 ? GetNodeId
 	var n1NodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
 	future = n1 ? GetSuccessor
@@ -82,45 +85,38 @@ class Node(idc: Int, m: Int) extends Actor {
   	return n1;
   }
 
-/*  // return closest finger preceding id
-  def closest_preceding_finger(id: Int): ActorRef = {
-  	val queryInterval = nodeId to id
-  	var node = -1
-  	for (i <- m to 1 by -1) {
-  		
-		future = finger(i).node ? GetNodeId
-		val result = Await.result(future, timeout.duration).asInstanceOf[Int]
+  // Hash function
+  def hash(key: String): Int = {
+    return MH3.stringHash(key)
+  }
 
-  		if (queryInterval.contains(result)) {
-  			return finger(i).node
-  		}
-  	}
+  def init_finger_table(n: ActorRef) = {
+  }
+  
+  def update_others() = {
 
-  	return self;
-  }*/
+  }
 
   def receive = {
     case Initialize(actors) =>
-      for(i <- 1 to m) {
-        val start = ((nodeId + pow(2, (i-1))) % pow(2,m)).toInt
-      	val intEnd = ((nodeId + pow(2, i)) % pow(2,m)).toInt
-        var node: ActorRef = null
-
-        // Find finger[i].node = First node -geq finger[i].start
-        var sIdx = start
-        //println("Start = " + start + "\t" + actors(start))
-        while(actors(sIdx) == null) {
-        	//println("\nChecking sIdx = " + sIdx + " for " + actors(start))
-        	sIdx = (sIdx + 1) % pow(2, m).toInt
-        }
-        node = actors(sIdx)
-
-        finger(i) =  new fingertable(start, start, intEnd, node);
-      }
-
       successor = finger(1).node
       for(i <- 1 to m)
- 	     println("Actor = " + self + " ID: " + nodeId + "\tfinger["+i+"] "+ finger(i).toString())
+ 	     println("Actor = " + self + " ID: " + nodeId + "\tfinger["+i+"] "+ finger(i).toString()) 
+         
+    case JoinNetwork(n1) =>
+      if(n1 == null) {
+        nodeId = hash(self.path.name)
+        for(i <- 1 to m) {
+          finger(i).node = self 
+        }
+        predecessor = self
+        successor = self
+      } else {
+        future = n1 ? GiveMeSomePlace(self.path.name)
+        nodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+        init_finger_table(n1)
+        update_others()
+      }
 
  	case GetNodeId() =>
  		sender ! nodeId
@@ -131,8 +127,7 @@ class Node(idc: Int, m: Int) extends Actor {
  	case ClosestPrecedingFinger(id) =>
  		val queryInterval = nodeId to id
   		var node = -1
-  		for (i <- m to 1 by -1) {
-	  		
+  		for (i <- m to 1 by -1) {		
 			future = finger(i).node ? GetNodeId
 			val result = Await.result(future, timeout.duration).asInstanceOf[Int]
 	
@@ -142,6 +137,9 @@ class Node(idc: Int, m: Int) extends Actor {
   		}
 	
   		sender ! self
+
+    case GiveMeSomePlace(key) =>
+      sender ! hash(key)
 
     case _ =>
       println("Error")
