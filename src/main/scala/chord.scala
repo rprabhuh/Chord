@@ -15,6 +15,7 @@ import scala.util.hashing.{MurmurHash3=>MH3}
 sealed trait chord
 
 case class Initialize(actorRefs: Array[ActorRef]) extends chord
+case class Create(actors: Array[ActorRef], nodeLocations:Array[Int], numRequests: Int) extends chord
 case class JoinNetwork(n: ActorRef) extends chord
 case class SendRequest(requesterRef: ActorRef, message: String, hopNum: Int) extends chord
 case class GetNodeId() extends chord
@@ -52,30 +53,54 @@ class Node(idc: Int, m: Int) extends Actor {
 
   // ask node to find its predecessor
   def find_predecessor(id: Int): ActorRef = {
-  	var n1 = self
-  	var future = n1 ? GetNodeId
-	var n1NodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
-	future = n1 ? GetSuccessor
-	var n1Succ = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
-	future = n1Succ ? GetNodeId
-	var n1SuccNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+    println("succ " + successor + " of " + self)
+  	var succNodeId = -1
+    if (successor != self) {
+      future = successor ? GetNodeId
+      succNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+    }
+    else
+      succNodeId = nodeId
 
-  	var queryInterval = n1NodeId to n1SuccNodeId
+    println("sNodeId = " + succNodeId)
+  	var queryInterval = (nodeId-1) to succNodeId
   	
   	var nextNode: ActorRef = null
+    var n1: ActorRef = self
   	while(queryInterval.contains(id) == false) {
-  		future = n1 ? ClosestPrecedingFinger
-		n1 = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
-		
-		future = n1 ? GetSuccessor
-		n1Succ = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
-		future = n1Succ ? GetNodeId
-		n1SuccNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
 
-		future = n1 ? GetNodeId
-		n1NodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+      if (n1 != self) {
+        future = n1 ? ClosestPrecedingFinger(id)
+        n1 = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+      }
+      else
+        n1 = ClosestPrecedingFinger(id)
 
-  		queryInterval = n1NodeId to n1SuccNodeId
+      var n1Succ: ActorRef = null
+      if (n1 != self) {
+        future = n1 ? GetSuccessor
+        n1Succ = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+      }
+      else
+        n1Succ = successor
+
+      var n1SuccNodeId: Int = -1
+      if (n1Succ != self) {
+        future = n1Succ ? GetNodeId
+        n1SuccNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+      }
+      else
+        n1SuccNodeId = nodeId
+
+      var n1NodeId: Int = -1
+      if (n1 != self) {
+        future = n1 ? GetNodeId
+        n1NodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+      }
+      else
+        n1NodeId = nodeId
+
+  		queryInterval = (n1NodeId - 1) to n1SuccNodeId
   	}
 
   	return n1;
@@ -96,10 +121,10 @@ class Node(idc: Int, m: Int) extends Actor {
   	future = successor ? SetPredecessor(self)
   	val success = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
 
-
-  	for( i <- 1 until m) {
+    var fingerNodeId: Int = -1
+    for( i <- 1 until m) {
 	  	future = finger(i).node ? GetNodeId
-	  	var fingerNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+	  	fingerNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
 	  	var queryInterval = nodeId to (fingerNodeId - 1)
   		if (queryInterval.contains(finger(i+1).start))
   			finger(i+1).node = finger(i).node
@@ -109,7 +134,17 @@ class Node(idc: Int, m: Int) extends Actor {
   		}
   	}
   }
-  
+
+  def ClosestPrecedingFinger(id: Int): ActorRef = {
+      val queryInterval = (nodeId - 1) to (id - 1)
+      var node = -1
+      for (i <- m to 1 by -1) {
+        if (queryInterval.contains(nodeId))
+          return finger(i).node
+      }
+      return self
+  }
+
   def update_others() = {
   	var p: ActorRef = null
   	for( i <- 0 to m) {
@@ -126,25 +161,30 @@ class Node(idc: Int, m: Int) extends Actor {
  	     println("Actor = " + self + " ID: " + nodeId + "\tfinger["+i+"] "+ finger(i).toString()) 
          
     case JoinNetwork(n1) =>
-			println("Node " + nodeId + " joined the network")
+			println("Node " + nodeId + " joining the network")
+
+      //Create the finger table
+      for(i <- 1 to m) {
+        val start = ((nodeId + pow(2, (i-1))) % pow(2,m)).toInt
+        val intEnd = ((nodeId + pow(2, i)) % pow(2,m)).toInt
+        finger(i) =  new fingertable(start, start, intEnd, self);
+      }
+
+      for(i<-1 to m)
+        print(finger(i).toString())
+
       if(n1 == null) {
-        //nodeId = hash(self.path.name)
-        for(i <- 1 to m) {
-					finger(i) = new fingertable(nodeId,nodeId, nodeId, self)
-          //finger(i).node = self
-        }
         predecessor = self
         successor = self
       } else {
-				//Create the finger table
-				for(i <- 1 to m) {
-					finger(i) = new fingertable(-1, -1, -1, self)
-				}
-        //init_finger_table(n1)
-        //update_others()
+        init_finger_table(n1)
+        update_others()
       }
 
+      sender ! true
+
  	case GetNodeId() =>
+    println("Let me get node id for " + sender)
  		sender ! nodeId
 
  	case GetSuccessor() =>
@@ -154,16 +194,23 @@ class Node(idc: Int, m: Int) extends Actor {
  		sender ! predecessor
 
  	case SetPredecessor(pred: ActorRef) =>
- 		predecessor = pred
+ 		  predecessor = pred
+      sender ! true
 
  	case FindSuccessor(id: Int) =>
- 		var n1 = find_predecessor(id)
-  		future = n1 ? GetSuccessor
-		val succResult = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+ 		val n1 = find_predecessor(id)
+    var succResult:ActorRef = null
+    if (n1 != self) {
+      future = n1 ? GetSuccessor
+      succResult = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+    }
+    else
+      succResult = finger(1).node
+
 		sender ! succResult
 
  	case ClosestPrecedingFinger(id) =>
- 		val queryInterval = nodeId to id
+ 		val queryInterval = (nodeId - 1) to (id - 1)
   		var node = -1
   		for (i <- m to 1 by -1) {		
 			future = finger(i).node ? GetNodeId
@@ -193,10 +240,28 @@ class Node(idc: Int, m: Int) extends Actor {
       sender ! hash(key)
 
     case _ =>
-      println("Error")
+      println("ERROR: Unknown Message - " + sender)
   }
 }
 
+
+// Create the result listener
+class TheArchitect extends Actor {
+  def receive = {
+    case Create(actors, nodeLocations, numRequests) =>
+      implicit val timeout = Timeout(30 seconds)
+      var future = actors(0) ? JoinNetwork(null)
+      var success = Await.result(future, timeout.duration).asInstanceOf[Boolean]
+
+      for(i <- 1 until nodeLocations.length) {
+        future = actors(nodeLocations(i)) ? JoinNetwork(actors(0))
+        success = Await.result(future, timeout.duration).asInstanceOf[Boolean]
+      }
+
+    case _ => println("INVALID MESSAGE")
+      System.exit(1)
+  }
+}
 
 
 // Create the result listener
@@ -219,7 +284,7 @@ object Chord extends App {
     }
 
     // Number of nodes (peers)
-    var numNodes = args(0).toInt
+    val numNodes = args(0).toInt
   	val m = 10 //ceil(log(numNodes)/log(2)).toInt
   	val size = pow(2, m).toInt
 
@@ -236,33 +301,21 @@ object Chord extends App {
         PeerNodes(i) = null
     }
 
-		var slots = floor(size/numNodes).toInt
+		val slots = floor(size/numNodes).toInt
+		println("Peer Network of size " + size)
 
-    for( i <- 0 until size by slots) {
-    	if (idx < numNodes) {
-    		PeerNodes(i) = system.actorOf(Props(new Node(i, m)))
+		for( i <- 0 until size by slots) {
+			if (idx < numNodes) {
+				PeerNodes(i) = system.actorOf(Props(new Node(i, m)))
 				NodeLocations(idx) = i
-			//	println(PeerNodes(i) + " present at " + i)
-    		idx += 1
-    	}
-    }
-
-    // Actor positions in the network ring - for debugging
-    println("Peer Network of size " + size)
-		/*implicit val timeout = Timeout(5 seconds)
-    for( i <- 0 until size) {
-    	if (PeerNodes(i) != null){
-				val future = PeerNodes(i) ? GetNodeId
-
-				val success = Await.result(future, timeout.duration).asInstanceOf[Int]
-				println(PeerNodes(i) + " present at " + success)
+				println(PeerNodes(i) + " present at " + i)
+				idx += 1
 			}
-
-    }*/
-		PeerNodes(0) ! JoinNetwork(null)
-		for(i <- 1 until numNodes) {
-			PeerNodes(NodeLocations(i)) ! JoinNetwork(PeerNodes(0))
 		}
+
+    val Arch = system.actorOf(Props[TheArchitect])
+    Arch ! Create(PeerNodes, NodeLocations, numRequests)
+
     println("\n")
 
 	}
