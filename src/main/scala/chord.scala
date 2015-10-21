@@ -46,7 +46,7 @@ class Node(idc: Int, m: Int) extends Actor {
   var predecessor: ActorRef = null
   var finger:Array[fingertable] = new Array[fingertable](m + 1)
   var i = 0
-  implicit val timeout = Timeout(5 seconds)
+  implicit val timeout = Timeout(30 seconds)
   var future:Future[Any]= null
 
 
@@ -126,18 +126,22 @@ class Node(idc: Int, m: Int) extends Actor {
  	     println("Actor = " + self + " ID: " + nodeId + "\tfinger["+i+"] "+ finger(i).toString()) 
          
     case JoinNetwork(n1) =>
+			println("Node " + nodeId + " joined the network")
       if(n1 == null) {
-        nodeId = hash(self.path.name)
+        //nodeId = hash(self.path.name)
         for(i <- 1 to m) {
-          finger(i).node = self 
+					finger(i) = new fingertable(nodeId,nodeId, nodeId, self)
+          //finger(i).node = self
         }
         predecessor = self
         successor = self
       } else {
-        future = n1 ? GiveMeSomePlace(self.path.name)
-        nodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
-        init_finger_table(n1)
-        update_others()
+				//Create the finger table
+				for(i <- 1 to m) {
+					finger(i) = new fingertable(-1, -1, -1, self)
+				}
+        //init_finger_table(n1)
+        //update_others()
       }
 
  	case GetNodeId() =>
@@ -216,14 +220,15 @@ object Chord extends App {
 
     // Number of nodes (peers)
     var numNodes = args(0).toInt
-  	val m = ceil(log(numNodes)/log(2)).toInt
+  	val m = 10 //ceil(log(numNodes)/log(2)).toInt
   	val size = pow(2, m).toInt
 
     // Number of requests each peer will make
-    var numRequests = args(1)
+    var numRequests = args(1).toInt
 
     val system = ActorSystem("Chord")
     var PeerNodes:Array[ActorRef] = new Array[ActorRef](size)
+		var NodeLocations:Array[Int] = new Array[Int](numNodes)
     var idx = 0
 
     // Initialize the actor nodes to NULL
@@ -231,25 +236,34 @@ object Chord extends App {
         PeerNodes(i) = null
     }
 
-    for( i <- 0 until size by 2) {
+		var slots = floor(size/numNodes).toInt
+
+    for( i <- 0 until size by slots) {
     	if (idx < numNodes) {
     		PeerNodes(i) = system.actorOf(Props(new Node(i, m)))
+				NodeLocations(idx) = i
+			//	println(PeerNodes(i) + " present at " + i)
     		idx += 1
     	}
     }
 
     // Actor positions in the network ring - for debugging
     println("Peer Network of size " + size)
+		/*implicit val timeout = Timeout(5 seconds)
     for( i <- 0 until size) {
-    	if (PeerNodes(i) != null)
-    		println(PeerNodes(i) + " present at " + i)
-    }
+    	if (PeerNodes(i) != null){
+				val future = PeerNodes(i) ? GetNodeId
+
+				val success = Await.result(future, timeout.duration).asInstanceOf[Int]
+				println(PeerNodes(i) + " present at " + success)
+			}
+
+    }*/
+		PeerNodes(0) ! JoinNetwork(null)
+		for(i <- 1 until numNodes) {
+			PeerNodes(NodeLocations(i)) ! JoinNetwork(PeerNodes(0))
+		}
     println("\n")
 
-    for( i <- 0 until size) {
-    	if (PeerNodes(i) != null)
-        	PeerNodes(i) ! Initialize(PeerNodes)
-    }
-
-  }
+	}
 }
