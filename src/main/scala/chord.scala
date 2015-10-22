@@ -41,8 +41,9 @@ class fingertable(startc: Int, intStart: Int, intEnd: Int, nodec: ActorRef) {
 
 
 // Create an actor for a peer
-class Node(idc: Int, m: Int) extends Actor {
+class Node(idc: Int, mc: Int) extends Actor {
   var nodeId = idc
+  val m = mc
   var successor: ActorRef = null
   var predecessor: ActorRef = null
   var finger:Array[fingertable] = new Array[fingertable](m + 1)
@@ -74,7 +75,7 @@ class Node(idc: Int, m: Int) extends Actor {
         n1 = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
       }
       else
-        n1 = ClosestPrecedingFinger(id)
+        n1 = ClosestPrecFinger(id)
 
       var n1Succ: ActorRef = null
       if (n1 != self) {
@@ -112,33 +113,54 @@ class Node(idc: Int, m: Int) extends Actor {
   }
 
   def init_finger_table(n1: ActorRef) = {
-  	future = n1 ? FindSuccessor(finger(1).start)
-  	finger(1).node = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+		if (n1 != self) {
+			future = n1 ? FindSuccessor(finger(1).start)
+			finger(1).node = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+		}
+		else
+			finger(1).node = successor
 
-  	future = finger(1).node ? GetPredecessor()
-  	predecessor = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+		if (finger(1).node != self) {
+			future = finger(1).node ? GetPredecessor()
+			predecessor = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+		}
 
-  	future = successor ? SetPredecessor(self)
-  	val success = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+		if (successor != self) {
+			future = successor ? SetPredecessor(self)
+			val success = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+		}
+		else
+			predecessor = self
 
     var fingerNodeId: Int = -1
     for( i <- 1 until m) {
-	  	future = finger(i).node ? GetNodeId
-	  	fingerNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
-	  	var queryInterval = nodeId to (fingerNodeId - 1)
+
+			if (finger(i).node != self) {
+				future = finger(i).node ? GetNodeId
+				fingerNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+			}
+			else
+				fingerNodeId = nodeId
+
+			var queryInterval = nodeId to (fingerNodeId - 1)
   		if (queryInterval.contains(finger(i+1).start))
   			finger(i+1).node = finger(i).node
   		else {
-  			future = n1 ? FindSuccessor(finger(i+1).start)
-  			finger(i+1).node = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+				if (n1 != self) {
+					future = n1 ? FindSuccessor(finger(i+1).start)
+					finger(i+1).node = Await.result(future, timeout.duration).asInstanceOf[ActorRef]
+				}
+				else
+					finger(i+1).node = successor
   		}
   	}
   }
 
-  def ClosestPrecedingFinger(id: Int): ActorRef = {
-      val queryInterval = (nodeId - 1) to (id - 1)
+  def ClosestPrecFinger(id: Int): ActorRef = {
+      val queryInterval = ((nodeId - 1) % pow(2, m)).toInt to ((id - 1) % pow(2, m)).toInt
       var node = -1
       for (i <- m to 1 by -1) {
+        //println("ClosestPrecFinger: Checking " + nodeId + " in " + queryInterval)
         if (queryInterval.contains(nodeId))
           return finger(i).node
       }
@@ -149,9 +171,40 @@ class Node(idc: Int, m: Int) extends Actor {
   	var p: ActorRef = null
   	for( i <- 0 to m) {
   		p = find_predecessor((nodeId - pow(2, i-1)).toInt)
-  		p ? UpdateFingerTable(self, i)
+			if (p != self)
+  			p ! UpdateFingerTable(self, i)
+			else
+				UpdFingerTable(self, i)
   	}
   }
+
+	def UpdFingerTable(s: ActorRef, i: Int): Unit = {
+		var fingerNodeId = -1
+		if (finger(i).node != self) {
+			future = finger(i).node ? GetNodeId
+			fingerNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+		}
+		else
+			fingerNodeId = nodeId
+
+		var sNodeId: Int = -1
+		if (s != self) {
+			future = s ? GetNodeId
+			sNodeId = Await.result(future, timeout.duration).asInstanceOf[Int]
+		}
+		else
+			sNodeId = nodeId
+
+		var queryInterval = nodeId to (fingerNodeId - 1)
+		if (queryInterval.contains(sNodeId)) {
+			finger(i).node = s
+			var p = predecessor
+			if (p != self)
+				p ! UpdateFingerTable(s, i)
+			else
+				UpdFingerTable(s, i)
+		}
+	}
 
 
   def receive = {
@@ -253,10 +306,11 @@ class TheArchitect extends Actor {
       var future = actors(0) ? JoinNetwork(null)
       var success = Await.result(future, timeout.duration).asInstanceOf[Boolean]
 
-      for(i <- 1 until nodeLocations.length) {
+      actors(nodeLocations(i)) ! JoinNetwork(actors(0))
+      /*for(i <- 1 until nodeLocations.length) {
         future = actors(nodeLocations(i)) ? JoinNetwork(actors(0))
         success = Await.result(future, timeout.duration).asInstanceOf[Boolean]
-      }
+      }*/
 
     case _ => println("INVALID MESSAGE")
       System.exit(1)
