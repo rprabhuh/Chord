@@ -28,6 +28,9 @@ case class FindSuccessor(id: Int) extends chord
 case class ClosestPrecedingFinger(id: Int) extends chord
 case class UpdateFingerTable(s: NodeInfo, i: Int) extends chord
 case class GiveMeSomePlace(ip: String) extends chord
+case class StartQuerying() extends chord
+case class Result(node: Int) extends chord
+case class Lookup(initiator: ActorRef, hopcount: Int, node: Int)
 //case class FailureKill(timeToSleep: Int) extends chord
 
 class NodeInfo (n: ActorRef, id: Int) {
@@ -53,9 +56,10 @@ class fingertable(startc: Int, intStart: Int, intEnd: Int, nodec: NodeInfo) {
 
 
 // Create an actor for a peer
-class Node(idc: Int, mc: Int) extends Actor {
+class Node(idc: Int, mc: Int, numreqc: Int) extends Actor {
   var nodeId = idc
   val m = mc
+  val numreq = numreqc
   val size = (pow(2, m)).toInt
   var successor: NodeInfo = null
   var predecessor: NodeInfo = null
@@ -163,7 +167,7 @@ class Node(idc: Int, mc: Int) extends Actor {
         if (end < 0)
         end += size
 
-        println("Checking finger " + i + " : " + nodeId + " : Comparing " + finger(i).node.nodeId + " with (" + (nodeId + 1) + ", " + (id - 1) + ")")
+        //println("Checking finger " + i + " : " + nodeId + " : Comparing " + finger(i).node.nodeId + " with (" + (nodeId + 1) + ", " + (id - 1) + ")")
         if (belongs_to(finger(i).node.nodeId, (nodeId + 1) % size, end))
           return finger(i).node
       }
@@ -178,15 +182,15 @@ class Node(idc: Int, mc: Int) extends Actor {
       if (pred_id < 0)
         pred_id += size
 
-      println("ITERATION " + i + " :Calling find_predecessor(" + pred_id +")")
+      //println("ITERATION " + i + " :Calling find_predecessor(" + pred_id +")")
   		p = find_predecessor(pred_id)
 			if (p.node != self) {
-        println(self + "\tUpdating finger entry " + i + " for " + p)
+        //println(self + "\tUpdating finger entry " + i + " for " + p)
         p.node ? UpdateFingerTable(new NodeInfo(self, nodeId), i)
         //var success = Await.Result(future, timeout.duration).asInstanceOf[]
       }
 			else {
-        println(self + "\tUpdating finger entry " + i + " for " + self)
+        //println(self + "\tUpdating finger entry " + i + " for " + self)
         update_finger_table(new NodeInfo(self, nodeId), i)
       }
   	}
@@ -230,7 +234,7 @@ class Node(idc: Int, mc: Int) extends Actor {
  	     println("Actor = " + self + " ID: " + nodeId + "\tfinger["+i+"] "+ finger(i).toString()) 
          
     case JoinNetwork(n1) =>
-			println("Node " + nodeId + " joining the network")
+			//println("Node " + nodeId + " joining the network")
 
       //Create the finger table
       for(i <- 1 to m) {
@@ -247,12 +251,12 @@ class Node(idc: Int, mc: Int) extends Actor {
         successor = new NodeInfo(self, nodeId)
       } else {
         init_finger_table(n1)
-        println("inited " + self + " with help from " + n1.node)
-        for(i<-1 to m)
-          println(self + finger(i).toString())
+        //println("inited " + self + " with help from " + n1.node)
+        /*for(i<-1 to m)
+          println(self + finger(i).toString())*/
 
         update_others()
-        println("updated " + self + " with help from " + n1.node)
+        //println("updated " + self + " with help from " + n1.node)
       }
       sender ! true
 
@@ -347,6 +351,39 @@ class Node(idc: Int, mc: Int) extends Actor {
     case GiveMeSomePlace(key) =>
       sender ! hash(key)
 
+    case StartQuerying =>
+      var randomstring = ""
+      var hash = 0
+      for(i <- 0 until numreq) {
+        //Create a random string
+        randomstring = scala.util.Random.alphanumeric.take(15).mkString
+        //Hash the random string and mod it by size of network
+        hash = scala.math.abs(MH3.stringHash(randomstring) % size)
+        //Search for that Node
+        finger(1).node.node ! Lookup(self, 1, hash)
+        //println("Start Querying Received in " + self + " for " + hash)
+        Thread sleep(1000)
+      }
+
+    case Result(numHops) =>
+      println(self + " found the node in " + numHops + " hops")
+
+    case Lookup(initiator, hopcount, lookup_node) =>
+      //println(self + " : " + lookup_node)
+      if(belongs_to(lookup_node, (predecessor.nodeId+1)%size, nodeId)) {
+        initiator ! Result(hopcount)
+      } else {
+        for(i<- m to 1 by -1) {
+          var end = finger(i).interval._2 - 1
+          if (end < 0)
+            end += size
+
+          if(belongs_to(lookup_node, finger(i).interval._1, end)) {
+            finger(i).node.node ! Lookup(initiator, hopcount+1, lookup_node)
+          }
+        }
+      }
+
     case any =>
       println(self + " :ERROR: Unknown Message from " + sender)
       println(any)
@@ -374,9 +411,13 @@ class TheArchitect extends Actor {
         //actors(nodeLocations(i)) ! JoinNetwork(new NodeInfo(actors(0), nodeLocations(0)))
         future = actors(nodeLocations(i)) ? JoinNetwork(new NodeInfo(actors(0), nodeLocations(0)))
         success = Await.result(future, timeout.duration).asInstanceOf[Boolean]
+        //println(i)
       }
 
-    case true => println("Joined!")
+      for(i <- 0 until nodeLocations.length) {
+        actors(nodeLocations(i)) ! StartQuerying
+      }
+
 
     case _ => println("INVALID MESSAGE")
       System.exit(1)
@@ -426,7 +467,7 @@ object Chord extends App {
 
 		for( i <- 0 until size by slots) {
 			if (idx < numNodes) {
-				PeerNodes(i) = system.actorOf(Props(new Node(i, m)))
+				PeerNodes(i) = system.actorOf(Props(new Node(i, m, numRequests)))
 				NodeLocations(idx) = i
 				//println(PeerNodes(i) + " present at " + i)
 				idx += 1
