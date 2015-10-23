@@ -288,7 +288,7 @@ class Node(idc: Int, mc: Int) extends Actor {
     var end = successor.nodeId
     val loop = new Breaks
     loop.breakable {
-      while (belongs_to(id, start, end) && flag) {
+      while (!belongs_to(id, start, end) && flag) {
         if (n1.node != self) {
           future = n1.node ? ClosestPrecedingFinger(id)
           n1 = Await.result(future, timeout.duration).asInstanceOf[NodeInfo]
@@ -298,7 +298,7 @@ class Node(idc: Int, mc: Int) extends Actor {
 
         var n1Succ: NodeInfo = null
         if (n1.node != self) {
-          future = n1.node ? GetSuccessor
+          future = n1.node ? GetSuccessor()
           n1Succ = Await.result(future, timeout.duration).asInstanceOf[NodeInfo]
         }
         else
@@ -315,7 +315,7 @@ class Node(idc: Int, mc: Int) extends Actor {
 
     var succResult:NodeInfo = null
     if (n1.node != self) {
-      future = n1.node ? GetSuccessor
+      future = n1.node ? GetSuccessor()
       succResult = Await.result(future, timeout.duration).asInstanceOf[NodeInfo]
     }
     else
