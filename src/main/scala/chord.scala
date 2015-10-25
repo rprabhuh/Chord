@@ -34,6 +34,7 @@ case class Lookup(initiator: ActorRef, hopcount: Int, node: Int)
 case class LicenseToKill(nodesRef: Array[ActorRef], kill: Boolean) extends chord
 case class Kill() extends chord
 case class ICER(timeToSleep: Int) extends chord
+case class Threaten() extends chord
 
 class NodeInfo (n: ActorRef, id: Int) {
   var node: ActorRef = n
@@ -414,6 +415,8 @@ class Node(idc: Int, mc: Int, numreqc: Int) extends Actor {
       currentState = "DEAD"
     case ICER(time) =>
       Thread sleep(time)
+    case Threaten() =>
+        println("Node " +nodeId +" leaving the network")
     case any =>
       println(self + " :ERROR: Unknown Message from " + sender)
       println(any)
